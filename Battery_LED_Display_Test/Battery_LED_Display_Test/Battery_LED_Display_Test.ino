@@ -78,8 +78,14 @@ SoftwareSerial BTserial(4, 5); // TX, RX
 StaticJsonDocument<20> currentdata;
 StaticJsonDocument<20> batterydata;
 StaticJsonDocument<20> powerdata;
+StaticJsonDocument<20> carbonData;
+
+auto timer = timer_create_default();
+
+int carbon = 0;
 
 //*** LOIC ****
+
 void setup() {
   Serial.begin(9600);
   while (!Serial) {
@@ -117,9 +123,17 @@ void setup() {
   //***** LOIC *****
 
   BTserial.begin(9600);
+  // The intervals below are prime numbers near 
+  // near the desired frequency we want to trigger the function
+  // ex: 60000 ms -> 60013
+  timer.every(60013, send_powerData);
+  timer.every(30011, send_batteryData);
+  timer.every(1511, send_currentData);
+  timer.every(20011, send_carbonData);
 
   //***** LOIC *****
 }
+
 
 void loop() {
  
@@ -151,43 +165,66 @@ void loop() {
     write_data(totalPowerProduced);  //write data
     Serial.println("data written");
     totalAmps = 0;
-   }
+  }
 
- 
-    //*** LOIC ****  
-if (currentMillis - previous >= 1500) {
-   previous = currentMillis;
-   double avgcurrent = (averageamperage*100)/100;
-   if (avgcurrent >= 0)
-   {
-    currentdata["current"] = (avgcurrent);
-   }
-   else if(avgcurrent < 0){
-    currentdata["current"] = 0; 
-   } 
-    //serializeJson(currentdata, Serial);
-    serializeJson(currentdata, BTserial);
-}
-if (currentMillis - prev >= 3500) {
-    prev = currentMillis;
-    batterydata["battery"] = map(currentcharge, 0, 11000, 0, 100);
-    serializeJson(batterydata, Serial);
-    serializeJson(batterydata, BTserial);
-}
-if (currentMillis - past >= 5500) {
-    past = currentMillis;
-    double totalpow = (totalPowerProduced*100)/100;
-    if (totalpow >= 0){
-    powerdata["power"] = (totalpow);
-    }
-    serializeJson(powerdata, Serial);
-    serializeJson(powerdata, BTserial);
-}
-//*** LOIC ****
+  //*** LOIC ****  
+  timer.tick();
+  //*** LOIC ****
 
   // totalAmps = 0;
   sunray();
 }
+
+//*** LOIC ****
+
+bool send_currentData(void *) 
+{
+  // Round current value to nearest centi amp
+  double avgcurrent = ((int)(averageamperage * 10.0 + 0.5) / 10.0);
+  if (avgcurrent >= 0)
+  {
+    currentdata["current"] = avgcurrent;
+  }
+  else if(avgcurrent < 0) {
+    currentdata["current"] = 0; 
+  } 
+  serializeJson(currentdata, Serial);
+  serializeJson(currentdata, BTserial);
+  return true; // repeat? true
+}
+
+bool send_batteryData(void *)
+{
+  // Round batttery value to nearest %
+  batterydata["battery"] = round(map(currentcharge, 0, 11000, 0, 100));
+  serializeJson(batterydata, Serial);
+  serializeJson(batterydata, BTserial);
+  return true; // repeat? true
+}
+
+bool send_powerData(void *)
+{
+  // Round power produced to nearest Wh
+  double totalpow = round(totalPowerProduced);
+  if (totalpow >= 0) {
+    powerdata["power"] = totalpow;
+  }
+  serializeJson(powerdata, Serial);
+  serializeJson(powerdata, BTserial);
+  return true; // repeat? true
+}
+
+bool send_carbonData(void *)
+{
+  // Round carbon values to nearest gram
+  carbonData["carbon"] = ((int)(carbon * 10.0 + 0.5) / 10.0);
+  serializeJson(carbonData, BTserial);
+  serializeJson(carbonData, Serial);
+  carbon = (carbon > 750) ? 0: carbon + 0.5;
+  return true; // repeat? true
+}
+
+//*** LOIC ****
 
 void sunray() {
   if (averageamperage > 0.8) {
