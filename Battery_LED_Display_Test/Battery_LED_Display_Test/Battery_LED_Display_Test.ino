@@ -123,13 +123,7 @@ void setup() {
   //***** LOIC *****
 
   BTserial.begin(9600);
-  // The intervals below are prime numbers near 
-  // near the desired frequency we want to trigger the function
-  // ex: 60000 ms -> 60013
-  timer.every(60013, send_powerData);
-  timer.every(30011, send_batteryData);
-  timer.every(1511, send_currentData);
-  timer.every(20011, send_carbonData);
+  timer.every(10000, send_data);
 
   //***** LOIC *****
 }
@@ -177,6 +171,14 @@ void loop() {
 
 //*** LOIC ****
 
+bool send_data(void *) {
+  timer.in(0, send_powerData);
+  timer.in(1500, send_batteryData);
+  timer.in(3000, send_currentData);
+  timer.in(4500, send_carbonData);
+  return true; // repeat? true
+}
+
 bool send_currentData(void *) 
 {
   // Round current value to nearest centi amp
@@ -216,11 +218,12 @@ bool send_powerData(void *)
 
 bool send_carbonData(void *)
 {
+  // Energy to carbon emissions conversion factor:
+  // https://www.epa.gov/energy/greenhouse-gases-equivalencies-calculator-calculations-and-references
   // Round carbon values to nearest gram
-  carbonData["carbon"] = ((int)(carbon * 10.0 + 0.5) / 10.0);
+  carbonData["carbon"] = ((int)(totalPowerProduced * 0.000707 * 1000.0 + 0.5) / 1000.0);
   serializeJson(carbonData, BTserial);
   serializeJson(carbonData, Serial);
-  carbon = (carbon > 750) ? 0: carbon + 0.5;
   return true; // repeat? true
 }
 
