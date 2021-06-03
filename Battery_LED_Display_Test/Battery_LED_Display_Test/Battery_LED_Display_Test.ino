@@ -1,159 +1,106 @@
-/**
- * Refactoring of SunStation firmware
- */
-
-// SD Setup
-
 #include <SPI.h>
 #include <SD.h>
-
-File myFile;
-const byte numChars = 20;             // max 20 char transfer rate for BLE
-char receivedChars[numChars] = {'0'}; // an array to store the received data
-
-// NeoPixel Setup
-
-#include <Adafruit_NeoPixel.h>
-
-#define NPXPIN 3
-#define PMOS 2
-#define NUMPIXELS 15
-
-Adafruit_NeoPixel pixels(NUMPIXELS, NPXPIN, NEO_GRB + NEO_KHZ800);
-
-double currentcharge = 10.0;
-
-// Bluetooth Setup
-
 #include <SoftwareSerial.h>
+#include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 #include <arduino-timer.h>
 
-SoftwareSerial BTserial(4, 5); // RX, TX
+// Pin Defintions
+const int SD_PIN = 10;
+const int BT_RX = 4;
+const int BT_TX = 5;
+const int BATTERY_PIN = A0;
+const int PMOS_PIN = 15;
+const int NEOPIX_PIN = 3;
+const int BUTTON_PIN = 6; 
 
-StaticJsonDocument<20> powerData;
-StaticJsonDocument<20> batteryData;
-StaticJsonDocument<20> currentData;
-StaticJsonDocument<20> carbonData;
+// Constant vals
+const int MAX_THROUGHPUT = 20;  // max BLE packet payload
+const int NUM_PIXELS = 15;
 
-// General Setup
+// Global vars
+File logFile;
+char logFileChars[MAX_THROUGHPUT] = {'0'};
 
-#define BATTERYPIN A0
+SoftwareSerial BTserial(BT_RX, BT_TX);
+StaticJsonDocument<MAX_THROUGHPUT> energyData;
+StaticJsonDocument<MAX_THROUGHPUT> batteryData;
+StaticJsonDocument<MAX_THROUGHPUT> currentData;
+StaticJsonDocument<MAX_THROUGHPUT> carbonData;
+
+Adafruit_NeoPixel pixels(NUM_PIXELS, NEOPIX_PIN, NEO_GRB + NEO_KHZ800);
+
+int buttonState = 0;
 
 auto timer = timer_create_default();
 
-int energy = 0;
-int battery = 0;
-float current = 0.0;
-float totalCurrent = 0.0;
-float carbon = 0.0;
+int energy = 0;           // energy (wh) produced by station in its lifetime
+float rawBattery = 0;     // raw battery level est. of the station 
+int battery = 0;          // battery level (%) of the station
+float current = 0.0;      // current (amps) being drawn by the station
+float totalCurrent = 0.0; // ??
+float carbon = 0.0;       // carbon (kg of C02) "saved" by station in its lifetime
 
-// Functions
-
-void setup()
+void setup() 
 {
   Serial.begin(9600);
 
+  // Init Pushbutton
+  pinMode(BUTTON_PIN, INPUT);
+
+  // Init MOSFET
+  pinMode(PMOS_PIN, OUTPUT);
+  digitalWrite(PMOS_PIN, LOW);
+
   // Init NeoPixels
   pixels.begin();
-  pinMode(PMOS, OUTPUT);
-  digitalWrite(PMOS, LOW);
-  timer.every(20000, display_batteryStatus);
 
   // Init SD Card
   Serial.print("Initializing SD card...");
-  if (!SD.begin(10))
+  if (!SD.begin(SD_PIN))
   {
     Serial.println("initialization failed!");
   }
   Serial.println("initialization done.");
-  read_SD();                      // read content on SD on startup
-  energy = atof(receivedChars);   // value read is total energy produced by the station
+  
+  // Recover energy produced by station on startup
+  read_SD();
+  energy = atof(logFileChars);
 
-  // Init BLE module
+  // Init BLE module comms
   BTserial.begin(9600);
-  timer.every(10000, send_data);
+  timer.every(8000, send_data);
 
   // Init Battery Measurements
-  timer.every(300, get_batteryData);
+  timer.every(300, measure_batteryStatus);
 
   // Init Energy Calculations
-  timer.every(3600000, get_energyData);
+  timer.every(3600000, compute_energyData);
 }
 
-void loop()
+void loop() 
 {
+  // Start the timer
   timer.tick();
-}
-
-// Battery Functions
-bool get_batteryData(void *)
-{
-  current = getCurrent();                // nearest centi amp
-  totalCurrent = totalCurrent + current; // TO-DO: Explain this
-  battery = getBatteryLevel();           // nearest percentage
-  return true;                           // repeat? true
-}
-
-bool get_energyData(void *)
-{
-  // Calculate and save energy produced by the Station
-  energy = (totalCurrent / 10800 * 3.7) + energy;
-  write_SD();
-  totalCurrent = 0.0;
-
-  // Calculate carbon saved
-  // Energy to carbon emissions conversion factor from:
-  // https://www.epa.gov/energy/greenhouse-gases-equivalencies-calculator-calculations-and-references
-  carbon = ((int)(energy * 0.000707 * 1000.0 + 0.5) / 1000.0); // nearest gram
-  return true;                                                 // repeat? true
-}
-
-float getCurrent()
-{
-  float average, current;
-
-  // Compute moving average of 10 reads (of what?)
-  // in order to smooth current reading
-  static float readings[10] = {0.0};
-  static int index = 0;
-  readings[index++] = analogRead(BATTERYPIN); // moving average of 10 reads
-  if (index >= 10)
-    index = 0; // in order to smooth results
-  for (int i = 0; i < 10; i++)
-  {
-    average += readings[i];
+  // Continuously check for button press
+  buttonState = digitalRead(BUTTON_PIN);
+  if (buttonState == HIGH) {
+    display_batteryStatus();
   }
-  average = average / 10.0;
-
-  // Compute current (what are these numbers?)
-  // Explain here: ...
-  current = ((average / 1023) * 36.7) - 18.75;
-  current = ((int)(current * 10.0 + 0.5) / 10.0);
-
-  // return only significant current values
-  return abs(current) < 0.15 ? 0.0 : current;
 }
 
-int getBatteryLevel()
-{
-  // The calculations were really
-  // funky, so left it alone for now
-  // Should return batttery level from 0-100%
-  return 0;
-}
 
-// Neopixel Functions
-
-bool display_batteryStatus()
+/**
+ * Display station's battery status using the 
+ * NeoPixels LED ring
+ */
+void display_batteryStatus()
 {
-  // Detetmine battery level
-  int batteryLevel = (int)(battery + 0.5) / 10;
-  Serial.print("Battery Level: ");
-  Serial.println(batteryLevel);
+  // Determine number of ring bars light
+  int numBars = map(battery, 0, 100, 0, 11);
 
   // Set ring LEDs according to battery level (0-11)
-  for (int i = 0; i < batteryLevel; i++)
+  for (int i = 0; i < numBars; i++)
   {
     pixels.setPixelColor(i, pixels.Color(255, 255, 155));
   }
@@ -167,92 +114,176 @@ bool display_batteryStatus()
   pixels.show();
 
   timer.in(5000, clearPixels);
-
-  return true; // repeat? true
+  
 }
 
+/** Turns off NeoPixels */
 bool clearPixels(void *)
 {
   pixels.clear();
   pixels.show();
-  return true; // repeat? true
 }
 
-// SD Functions
 
+/**
+ * To-Do: Better Explanation
+ * We measure battery status by tracking the 
+ * cummulative current being drawn/output by the station
+ * Fully charged battery -> 7330 mA
+ */
+bool measure_batteryStatus(void *)
+{
+  measureCurrent();      
+  totalCurrent + current;
+  computeBatteryData();      
+  return true;                       
+}
+
+/**
+ * Measures current (amps) being drawn/output by station
+ */
+void measureCurrent()
+{
+  float average, curr;
+
+  // Compute moving average of 10 reads 
+  // in order to smooth fluctuations
+  static float readings[10] = {0.0};
+  static int index = 0;
+  readings[index++] = analogRead(BATTERY_PIN);
+  if (index >= 10)
+    index = 0; // in order to smooth results
+  for (int i = 0; i < 10; i++)
+  {
+    average += readings[i];
+  }
+  average = average / 10.0;
+
+  // Calibration below from sensor manufacturer (TO-DO: get link)
+  curr = ((average / 1023) * 36.7) - 18.75;
+  
+  // Round to the nearest centi amp
+  curr = ((int)(curr * 10.0 + 0.5) / 10.0);
+
+  // Adjustment found after testing
+  current = curr + 0.42;
+
+  // return only significant current values
+  // return abs(current) < 0.2 ? 0.0 : current;
+}
+
+/**
+ * Computes station's raw battery level (0 -> ~ 7330)
+ * and battery level in %
+ */
+void computeBatteryData()
+{
+  rawBattery += (current * 0.1);
+  if (rawBattery < 0) rawBattery = 0;
+  battery = map((long)rawBattery, 0, 7330, 0, 100);
+}
+
+/**
+ * 1. Compute energy produced by the station to date 
+ * and save that value on the SD card
+ * 
+ * 2. Compute equivalent of CO2 (kg) saved by the station
+ * Energy to carbon emissions conversion factor from:
+ * https://www.epa.gov/energy/greenhouse-gases-equivalencies-calculator-calculations-and-references
+ */
+bool compute_energyData(void *)
+{
+  // Calculate and save energy produced by the Station
+  energy = (totalCurrent / 10800 * 3.7) + energy;
+  write_SD();
+  totalCurrent = 0.0;
+
+  // Calculate carbon saved
+  carbon = ((int)(energy * 0.000707 * 1000.0 + 0.5) / 1000.0); // round to nearest gram
+  return true;
+}
+/**
+ * Saves energy produced by station in its lifetime on SD card
+ */
 bool write_SD()
 {
-  // open the file
-  myFile = SD.open("test.txt", O_WRITE | O_CREAT | O_TRUNC);
+  // open log file in write mode, create it if necessary, clear its prev contents
+  logFile = SD.open("logs.txt", O_WRITE | O_CREAT | O_TRUNC);
   // if the file opened okay, write to it:
-  if (myFile)
+  if (logFile)
   {
-    Serial.print("Writing to test.txt...");
-    myFile.println(energy);
+    Serial.print("Writing to logs.txt...");
+    logFile.println(energy);
     // close the file:
-    myFile.close();
+    logFile.close();
     Serial.println("done.");
   }
   else
   {
     // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
+    Serial.println("error opening logs.txt");
   }
-  return true; // repeat? true
+  return true;
 }
 
+
+/**
+ * Reads the contents of the SD card 
+ * into the the logFileChars buffer
+ */
 void read_SD()
 {
-  myFile = SD.open("test.txt");
+  logFile = SD.open("logs.txt");
   static byte ndx = 0;
   char endMarker = '\n';
   char rc;
-  if (myFile)
+  if (logFile)
   {
-    myFile.seek(0); // Position the read cursor at the start of the last record
+    // Place cursor at the start of file
+    logFile.seek(0); 
     // read from the file until there's nothing else in it:
-    while (myFile.available())
+    while (logFile.available())
     {
-      rc = myFile.read();
-
+      rc = logFile.read();
       if (rc != endMarker)
       {
-        receivedChars[ndx] = rc;
+        logFileChars[ndx] = rc;
         ndx++;
-        if (ndx >= numChars)
+        if (ndx >= MAX_THROUGHPUT)
         {
-          ndx = numChars - 1;
+          ndx = MAX_THROUGHPUT - 1;
         }
       }
       else
       {
-        receivedChars[ndx] = '\0'; // terminate the string
+        logFileChars[ndx] = '\0'; // terminate the string
         ndx = 0;
       }
     }
-    myFile.close();
+    logFile.close();
   }
 }
 
-// BLE Functions
-
-bool send_data(void *)
+/** Staggers transmission of station data over BLE  */
+bool send_data(void *) 
 {
-  timer.in(0, send_powerData);
+  timer.in(0, send_energyData);
   timer.in(1500, send_batteryData);
   timer.in(3000, send_currentData);
   timer.in(4500, send_carbonData);
-  return true; // repeat? true
+  return true;
 }
 
-bool send_powerData(void *)
+/**
+ * To-Do: Figure out how to replace functions below
+ * with a single customizable one
+ */ 
+bool send_energyData(void *)
 {
-  powerData["power"] = energy;
-  serializeJson(powerData, BTserial);
-  serializeJson(powerData, Serial);
-  // energy = (energy > 1250) ? 100 : energy + 5;
-  // energy = round(energy);
-  return true; // repeat? true
+  // To-Do: change "power" to "energy"
+  energyData["power"] = energy;
+  serializeJson(energyData, BTserial);
+  serializeJson(energyData, Serial);
 }
 
 bool send_batteryData(void *)
@@ -260,9 +291,6 @@ bool send_batteryData(void *)
   batteryData["battery"] = battery;
   serializeJson(batteryData, BTserial);
   serializeJson(batteryData, Serial);
-  // battery = (battery > 100) ? 0 : battery + 1;
-  // battery = round(battery);
-  return true; // repeat? true
 }
 
 bool send_currentData(void *)
@@ -270,9 +298,6 @@ bool send_currentData(void *)
   currentData["current"] = current;
   serializeJson(currentData, BTserial);
   serializeJson(currentData, Serial);
-  // current = (current > 3.0) ? 0.0 : current + 0.1;
-  // current = ((int)(current * 10.0 + 0.5) / 10.0);
-  return true; // repeat? true
 }
 
 bool send_carbonData(void *)
@@ -280,5 +305,4 @@ bool send_carbonData(void *)
   carbonData["carbon"] = carbon;
   serializeJson(carbonData, BTserial);
   serializeJson(carbonData, Serial);
-  return true; // repeat? true
 }
