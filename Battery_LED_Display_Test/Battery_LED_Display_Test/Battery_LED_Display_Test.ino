@@ -10,11 +10,11 @@ const int SD_PIN = 10;
 const int BT_RX = 4;
 const int BT_TX = 5;
 const int BATTERY_PIN = A0;
-const int PMOS_PIN = 15;
+const int PMOS_PIN = 5;
 const int NEOPIX_PIN = 3;
 const int BUTTON_PIN = 6; 
 
-// Constant vals
+// Constant values
 const int MAX_THROUGHPUT = 20;  // max BLE packet payload
 const int NUM_PIXELS = 15;
 
@@ -50,7 +50,7 @@ void setup()
 
   // Init MOSFET
   pinMode(PMOS_PIN, OUTPUT);
-  digitalWrite(PMOS_PIN, LOW);
+  analogWrite(PMOS_PIN, 0);
 
   // Init NeoPixels
   pixels.begin();
@@ -64,10 +64,12 @@ void setup()
   Serial.println("initialization done.");
   
   // Recover energy produced by station on startup
-  read_SD();
-  energy = atof(logFileChars);
+  // read_SD();
+  // energy = atof(logFileChars);
 
   // Init BLE module comms
+  pinMode(A2, OUTPUT);
+  digitalWrite(A2, HIGH);
   BTserial.begin(9600);
   timer.every(8000, send_data);
 
@@ -76,6 +78,9 @@ void setup()
 
   // Init Energy Calculations
   timer.every(3600000, compute_energyData);
+
+  // Print Testing Logs
+  timer.every(1000, log_data);
 }
 
 void loop() 
@@ -87,6 +92,16 @@ void loop()
   if (buttonState == HIGH) {
     display_batteryStatus();
   }
+}
+
+
+/**
+ * Logs data to SD 
+ */
+bool log_data(void *)
+{
+  write_SD();   
+  return true;                       
 }
 
 
@@ -134,8 +149,9 @@ bool clearPixels(void *)
 bool measure_batteryStatus(void *)
 {
   measureCurrent();      
-  totalCurrent + current;
-  computeBatteryData();      
+  totalCurrent = totalCurrent + current;
+  computeBatteryData();
+  // write_SD();   <--- Removed for testing
   return true;                       
 }
 
@@ -167,9 +183,8 @@ void measureCurrent()
 
   // Adjustment found after testing
   current = curr + 0.42;
-
-  // return only significant current values
-  // return abs(current) < 0.2 ? 0.0 : current;
+  // Retain only significant current values (above 0.20 or below -0.20)
+  current = abs(current) < 0.2 ? 0.0 : current;
 }
 
 /**
@@ -184,7 +199,7 @@ void computeBatteryData()
 }
 
 /**
- * 1. Compute energy produced by the station to date 
+ * 1. Compute energy (wH) produced by the station to date 
  * and save that value on the SD card
  * 
  * 2. Compute equivalent of CO2 (kg) saved by the station
@@ -195,7 +210,7 @@ bool compute_energyData(void *)
 {
   // Calculate and save energy produced by the Station
   energy = (totalCurrent / 10800 * 3.7) + energy;
-  write_SD();
+  // write_SD();  <-- Removed for testing
   totalCurrent = 0.0;
 
   // Calculate carbon saved
@@ -205,21 +220,40 @@ bool compute_energyData(void *)
 /**
  * Saves energy produced by station in its lifetime on SD card
  */
-bool write_SD()
-{
-  // open log file in write mode, create it if necessary, clear its prev contents
-  logFile = SD.open("logs.txt", O_WRITE | O_CREAT | O_TRUNC);
+//bool write_SD()
+//{
+//  // open log file in write mode, create it if necessary, clear its prev contents
+//  logFile = SD.open("logs.txt", O_WRITE | O_CREAT | O_TRUNC);
+//  // if the file opened okay, write to it:
+//  if (logFile)
+//  {
+//    Serial.print("Writing to logs.txt...");
+//    logFile.println(energy);
+//    // close the file:
+//    logFile.close();
+//    Serial.println("done.");
+//  }
+//  else
+//  {
+//    // if the file didn't open, print an error:
+//    Serial.println("error opening logs.txt");
+//  }
+//  return true;
+//}
+bool write_SD() {
+  logFile = SD.open("LOGS.TXT", FILE_WRITE);
   // if the file opened okay, write to it:
-  if (logFile)
-  {
-    Serial.print("Writing to logs.txt...");
-    logFile.println(energy);
-    // close the file:
+  if (logFile) {
+    // log to SD
+    Serial.println("Writing to LOGS.TXT");
+    logFile.print(millis()); logFile.print(",");
+    logFile.print(totalCurrent); logFile.print(",");
+    logFile.print(battery); logFile.println();
+    // log to serial monitor
+    Serial.print("totalCurrent: "); Serial.println(totalCurrent); 
+    Serial.print("battery: "); Serial.println(battery);
     logFile.close();
-    Serial.println("done.");
-  }
-  else
-  {
+  } else {
     // if the file didn't open, print an error:
     Serial.println("error opening logs.txt");
   }
@@ -233,7 +267,7 @@ bool write_SD()
  */
 void read_SD()
 {
-  logFile = SD.open("logs.txt");
+  logFile = SD.open("LOGS.TXT");
   static byte ndx = 0;
   char endMarker = '\n';
   char rc;
