@@ -11,6 +11,7 @@ const int BT_RX = 4;
 const int BT_TX = 5;
 const int BATTERY_PIN = A0;
 const int PMOS_PIN = 5;
+const int NMOS_PIN = 11;
 const int NEOPIX_PIN = 3;
 const int BUTTON_PIN = 6; 
 
@@ -21,6 +22,15 @@ const int NUM_PIXELS = 15;
 // Global vars
 File logFile;
 char logFileChars[MAX_THROUGHPUT] = {'0'};
+bool FIRST_BOOT = true;
+
+// Fine-Tune Variables
+const float idleDraw = 0.005083;
+const float currentAdjustment = 0.42;    // adds adjustment valueto measured current
+const float currentCutOff = 0.20;        // discards currents between -cutoff and + cuttoff
+const float chargeRate = 0.10;           // rate of battery charge
+const float dischargeRate = 0.12;        // rate of battery discharge
+
 
 SoftwareSerial BTserial(BT_RX, BT_TX);
 StaticJsonDocument<MAX_THROUGHPUT> energyData;
@@ -33,6 +43,8 @@ Adafruit_NeoPixel pixels(NUM_PIXELS, NEOPIX_PIN, NEO_GRB + NEO_KHZ800);
 int buttonState = 0;
 
 auto timer = timer_create_default();
+auto bleTimer = timer_create_default();
+
 
 int energy = 0;           // energy (wh) produced by station in its lifetime
 float rawBattery = 0;     // raw battery level est. of the station 
@@ -48,9 +60,12 @@ void setup()
   // Init Pushbutton
   pinMode(BUTTON_PIN, INPUT);
 
-  // Init MOSFET
+  // Init MOSFETS
   pinMode(PMOS_PIN, OUTPUT);
-  analogWrite(PMOS_PIN, 0);
+  digitalWrite(PMOS_PIN, LOW);
+  pinMode(NMOS_PIN, OUTPUT);
+  pinMode(NMOS_PIN, LOW);
+
 
   // Init NeoPixels
   pixels.begin();
@@ -85,12 +100,17 @@ void setup()
 
 void loop() 
 {
-  // Start the timer
+  // Start the timers
   timer.tick();
+  bleTimer.tick();
   // Continuously check for button press
   buttonState = digitalRead(BUTTON_PIN);
   if (buttonState == HIGH) {
     display_batteryStatus();
+    if (FIRST_BOOT) {
+        digitalWrite(NMOS_PIN, HIGH);
+        FIRST_BOOT = false;
+    }
   }
 }
 
@@ -104,6 +124,22 @@ bool log_data(void *)
   return true;                       
 }
 
+
+/**
+ * Turn on bluetooth
+ */
+ void toggle_BLE() 
+ {
+  digitalWrite(A2, HIGH);
+  bleTimer.cancel();
+  bleTimer.in(600000, kill_BLE);
+ }
+
+ bool kill_BLE(void *)
+ {
+  digitalWrite(A2, LOW);  
+  return false;
+ }
 
 /**
  * Display station's battery status using the 
@@ -182,18 +218,24 @@ void measureCurrent()
   curr = ((int)(curr * 10.0 + 0.5) / 10.0);
 
   // Adjustment found after testing
-  current = curr + 0.42;
-  // Retain only significant current values (above 0.20 or below -0.20)
-  current = abs(current) < 0.2 ? 0.0 : current;
+  current = curr + currentAdjustment;
+  // Retain only significant current values (above +cuttoff or below -cutoff)
+  current = abs(current) < currentCutOff ? 0.0 : current;
 }
 
 /**
  * Computes station's raw battery level (0 -> ~ 7330)
  * and battery level in %
+ * 
+ * idle draw -> 61 battery level units per hour 
+ *           -> 0.005083 battery level units per hour
  */
 void computeBatteryData()
 {
-  rawBattery += (current * 0.1);
+  // T0-D0: fine-tune charge rate / discharge rate 
+  float rate = (current >= 0) ? chargeRate : dischargeRate;
+  
+  rawBattery += (current * rate - idleDraw);
   if (rawBattery < 0) rawBattery = 0;
   battery = map((long)rawBattery, 0, 7330, 0, 100);
 }
@@ -271,25 +313,20 @@ void read_SD()
   static byte ndx = 0;
   char endMarker = '\n';
   char rc;
-  if (logFile)
-  {
+  if (logFile) {
     // Place cursor at the start of file
     logFile.seek(0); 
     // read from the file until there's nothing else in it:
-    while (logFile.available())
-    {
+    while (logFile.available()) {
       rc = logFile.read();
-      if (rc != endMarker)
-      {
+      if (rc != endMarker) {
         logFileChars[ndx] = rc;
         ndx++;
-        if (ndx >= MAX_THROUGHPUT)
-        {
+        if (ndx >= MAX_THROUGHPUT) {
           ndx = MAX_THROUGHPUT - 1;
         }
       }
-      else
-      {
+      else {
         logFileChars[ndx] = '\0'; // terminate the string
         ndx = 0;
       }
@@ -318,6 +355,7 @@ bool send_energyData(void *)
   energyData["power"] = energy;
   serializeJson(energyData, BTserial);
   serializeJson(energyData, Serial);
+  return false;
 }
 
 bool send_batteryData(void *)
@@ -325,6 +363,7 @@ bool send_batteryData(void *)
   batteryData["battery"] = battery;
   serializeJson(batteryData, BTserial);
   serializeJson(batteryData, Serial);
+  return false;
 }
 
 bool send_currentData(void *)
@@ -332,6 +371,7 @@ bool send_currentData(void *)
   currentData["current"] = current;
   serializeJson(currentData, BTserial);
   serializeJson(currentData, Serial);
+  return false;
 }
 
 bool send_carbonData(void *)
@@ -339,4 +379,5 @@ bool send_carbonData(void *)
   carbonData["carbon"] = carbon;
   serializeJson(carbonData, BTserial);
   serializeJson(carbonData, Serial);
+  return false;
 }
