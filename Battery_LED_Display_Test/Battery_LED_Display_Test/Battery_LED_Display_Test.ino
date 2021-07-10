@@ -10,8 +10,8 @@ const int SD_PIN = 10;
 const int BT_RX = 4;
 const int BT_TX = 5;
 const int BATTERY_PIN = A0;
-const int PMOS_PIN = 5;
-const int NMOS_PIN = 11;
+const int PMOS_PIN = 5;   // PMOS LOW for leds to turn on
+const int NMOS_PIN = 11;  // NMOS LOW before first boot, High afterward
 const int NEOPIX_PIN = 3;
 const int BUTTON_PIN = 6; 
 
@@ -26,11 +26,12 @@ bool FIRST_BOOT = true;
 
 // Fine-Tune Variables
 const float idleDraw = 0.005083;
-const float currentAdjustment = 0.42;    // adds adjustment valueto measured current
-const float currentCutOff = 0.20;        // discards currents between -cutoff and + cuttoff
+const int maxBattery = 7330;
+const float currentAdjustment = 0.42;    // adds adjustment value to measured current
+const float currentCutOff = 0.20;        // discards currents between -cutoff and +cuttoff
 const float chargeRate = 0.10;           // rate of battery charge
 const float dischargeRate = 0.12;        // rate of battery discharge
-
+const int bleCountdown = 15000;          // time in ms the ble module stays on after a button press
 
 SoftwareSerial BTserial(BT_RX, BT_TX);
 StaticJsonDocument<MAX_THROUGHPUT> energyData;
@@ -41,16 +42,15 @@ StaticJsonDocument<MAX_THROUGHPUT> carbonData;
 Adafruit_NeoPixel pixels(NUM_PIXELS, NEOPIX_PIN, NEO_GRB + NEO_KHZ800);
 
 int buttonState = 0;
+int lastButtonState = 0;
 
 auto timer = timer_create_default();
-auto bleTimer = timer_create_default();
-
 
 int energy = 0;           // energy (wh) produced by station in its lifetime
-float rawBattery = 0;     // raw battery level est. of the station 
-int battery = 0;          // battery level (%) of the station
+float rawBattery = 0;     // sation's battery level estimate (0-maxBattery). Previously "currentcharge".
+int battery = 0;          // stations's battery level in (%)
 float current = 0.0;      // current (amps) being drawn by the station
-float totalCurrent = 0.0; // ??
+float totalCurrent = 0.0; // amount of current accummulated by the station in an hour
 float carbon = 0.0;       // carbon (kg of C02) "saved" by station in its lifetime
 
 void setup() 
@@ -66,9 +66,10 @@ void setup()
   pinMode(NMOS_PIN, OUTPUT);
   pinMode(NMOS_PIN, LOW);
 
-
   // Init NeoPixels
   pixels.begin();
+  pixels.clear();
+  pixels.show();
 
   // Init SD Card
   Serial.print("Initializing SD card...");
@@ -84,7 +85,7 @@ void setup()
 
   // Init BLE module comms
   pinMode(A2, OUTPUT);
-  digitalWrite(A2, HIGH);
+  digitalWrite(A2, LOW);
   BTserial.begin(9600);
   timer.every(8000, send_data);
 
@@ -102,16 +103,22 @@ void loop()
 {
   // Start the timers
   timer.tick();
-  bleTimer.tick();
   // Continuously check for button press
   buttonState = digitalRead(BUTTON_PIN);
-  if (buttonState == HIGH) {
-    display_batteryStatus();
-    if (FIRST_BOOT) {
+  if (buttonState != lastButtonState) {
+    if (buttonState == HIGH) {
+      display_batteryStatus();
+      toggle_BLE();
+      if (FIRST_BOOT) {
+        digitalWrite(PMOS_PIN, LOW);
         digitalWrite(NMOS_PIN, HIGH);
         FIRST_BOOT = false;
+      }      
     }
+    lastButtonState = buttonState;
   }
+
+   // Serial.print("timers: "); Serial.println(timer.size());
 }
 
 
@@ -124,21 +131,21 @@ bool log_data(void *)
   return true;                       
 }
 
-
 /**
  * Turn on bluetooth
  */
  void toggle_BLE() 
  {
+  static Timer<>::Task bleCountdownTask;
   digitalWrite(A2, HIGH);
-  bleTimer.cancel();
-  bleTimer.in(600000, kill_BLE);
+  timer.cancel(bleCountdownTask);
+  bleCountdownTask = timer.in(bleCountdown, kill_BLE);
  }
 
  bool kill_BLE(void *)
  {
-  digitalWrite(A2, LOW);  
-  return false;
+  digitalWrite(A2, LOW);
+  return true;
  }
 
 /**
@@ -164,8 +171,9 @@ void display_batteryStatus()
 
   pixels.show();
 
-  timer.in(5000, clearPixels);
-  
+  static Timer<>::Task clearPixelsTask;
+  timer.cancel(clearPixelsTask);
+  clearPixelsTask = timer.in(5000, clearPixels);
 }
 
 /** Turns off NeoPixels */
@@ -173,6 +181,7 @@ bool clearPixels(void *)
 {
   pixels.clear();
   pixels.show();
+  return true;
 }
 
 
@@ -184,8 +193,8 @@ bool clearPixels(void *)
  */
 bool measure_batteryStatus(void *)
 {
-  measureCurrent();      
-  totalCurrent = totalCurrent + current;
+  measureCurrent();
+  if (current > 0) totalCurrent += current;      
   computeBatteryData();
   // write_SD();   <--- Removed for testing
   return true;                       
@@ -219,6 +228,7 @@ void measureCurrent()
 
   // Adjustment found after testing
   current = curr + currentAdjustment;
+  
   // Retain only significant current values (above +cuttoff or below -cutoff)
   current = abs(current) < currentCutOff ? 0.0 : current;
 }
@@ -232,12 +242,10 @@ void measureCurrent()
  */
 void computeBatteryData()
 {
-  // T0-D0: fine-tune charge rate / discharge rate 
   float rate = (current >= 0) ? chargeRate : dischargeRate;
-  
   rawBattery += (current * rate - idleDraw);
-  if (rawBattery < 0) rawBattery = 0;
-  battery = map((long)rawBattery, 0, 7330, 0, 100);
+  rawBattery = constrain(rawBattery, 0, maxBattery);
+  battery = map((long)rawBattery, 0, maxBattery, 0, 100);
 }
 
 /**
@@ -289,16 +297,16 @@ bool write_SD() {
     // log to SD
     Serial.println("Writing to LOGS.TXT");
     logFile.print(millis()); logFile.print(",");
-    logFile.print(totalCurrent); logFile.print(",");
+    logFile.print(rawBattery); logFile.print(",");
     logFile.print(battery); logFile.println();
     // log to serial monitor
-    Serial.print("totalCurrent: "); Serial.println(totalCurrent); 
+    Serial.print("rawBattery: "); Serial.println(rawBattery); 
     Serial.print("battery: "); Serial.println(battery);
-    logFile.close();
   } else {
     // if the file didn't open, print an error:
     Serial.println("error opening logs.txt");
   }
+  logFile.close();
   return true;
 }
 
