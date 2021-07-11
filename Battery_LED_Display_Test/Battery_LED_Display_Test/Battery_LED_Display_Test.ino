@@ -10,7 +10,7 @@ const int SD_PIN = 10;
 const int BT_RX = 4;
 const int BT_TX = 5;
 const int BATTERY_PIN = A0;
-const int PMOS_PIN = 5;   // PMOS LOW for leds to turn on
+const int PMOS_PIN = 5;   // PMOS LOW when neopixels ON, HIGH otherwise
 const int NMOS_PIN = 11;  // NMOS LOW before first boot, High afterward
 const int NEOPIX_PIN = 3;
 const int BUTTON_PIN = 6; 
@@ -62,7 +62,7 @@ void setup()
 
   // Init MOSFETS
   pinMode(PMOS_PIN, OUTPUT);
-  digitalWrite(PMOS_PIN, LOW);
+  digitalWrite(PMOS_PIN, HIGH);
   pinMode(NMOS_PIN, OUTPUT);
   pinMode(NMOS_PIN, LOW);
 
@@ -110,7 +110,6 @@ void loop()
       display_batteryStatus();
       toggle_BLE();
       if (FIRST_BOOT) {
-        digitalWrite(PMOS_PIN, LOW);
         digitalWrite(NMOS_PIN, HIGH);
         FIRST_BOOT = false;
       }      
@@ -154,6 +153,8 @@ bool log_data(void *)
  */
 void display_batteryStatus()
 {
+  digitalWrite(PMOS_PIN, LOW);
+
   // Determine number of ring bars light
   int numBars = map(battery, 0, 100, 0, 11);
 
@@ -181,6 +182,7 @@ bool clearPixels(void *)
 {
   pixels.clear();
   pixels.show();
+  digitalWrite(PMOS_PIN, HIGH);
   return true;
 }
 
