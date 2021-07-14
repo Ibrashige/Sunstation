@@ -2,6 +2,8 @@
 #include <SD.h>
 #include <SoftwareSerial.h>
 #include <Adafruit_NeoPixel.h>
+#include <EEPROM.h>
+
 #include <ArduinoJson.h>
 #include <arduino-timer.h>
 
@@ -10,8 +12,8 @@ const int SD_PIN = 10;
 const int BT_RX = 4;
 const int BT_TX = 5;
 const int BATTERY_PIN = A0;
-const int PMOS_PIN = 5;   // PMOS LOW when neopixels ON, HIGH otherwise
-const int NMOS_PIN = 11;  // NMOS LOW before first boot, High afterward
+const int PMOS_PIN = 2;   // PMOS LOW when neopixels ON, HIGH otherwise
+const int RELAY_PIN = 7;  // RELAY 0 before first boot, 255 afterward
 const int NEOPIX_PIN = 3;
 const int BUTTON_PIN = 6; 
 
@@ -21,7 +23,6 @@ const int NUM_PIXELS = 15;
 
 // Global vars
 File logFile;
-char logFileChars[MAX_THROUGHPUT] = {'0'};
 bool FIRST_BOOT = true;
 
 // Fine-Tune Variables
@@ -46,7 +47,7 @@ int lastButtonState = 0;
 
 auto timer = timer_create_default();
 
-int energy = 0;           // energy (wh) produced by station in its lifetime
+unsigned long energy = 0; // energy (wh) produced by station in its lifetime
 float rawBattery = 0;     // sation's battery level estimate (0-maxBattery). Previously "currentcharge".
 int battery = 0;          // stations's battery level in (%)
 float current = 0.0;      // current (amps) being drawn by the station
@@ -60,11 +61,13 @@ void setup()
   // Init Pushbutton
   pinMode(BUTTON_PIN, INPUT);
 
-  // Init MOSFETS
+  // Init MOSFET
   pinMode(PMOS_PIN, OUTPUT);
   digitalWrite(PMOS_PIN, HIGH);
-  pinMode(NMOS_PIN, OUTPUT);
-  pinMode(NMOS_PIN, LOW);
+
+  // Init Relay
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
 
   // Init NeoPixels
   pixels.begin();
@@ -80,8 +83,7 @@ void setup()
   Serial.println("initialization done.");
   
   // Recover energy produced by station on startup
-  // read_SD();
-  // energy = atof(logFileChars);
+  recover_energyProduced();
 
   // Init BLE module comms
   pinMode(A2, OUTPUT);
@@ -110,14 +112,12 @@ void loop()
       display_batteryStatus();
       toggle_BLE();
       if (FIRST_BOOT) {
-        digitalWrite(NMOS_PIN, HIGH);
+        digitalWrite(RELAY_PIN, HIGH);
         FIRST_BOOT = false;
       }      
     }
     lastButtonState = buttonState;
   }
-
-   // Serial.print("timers: "); Serial.println(timer.size());
 }
 
 
@@ -262,13 +262,31 @@ bool compute_energyData(void *)
 {
   // Calculate and save energy produced by the Station
   energy = (totalCurrent / 10800 * 3.7) + energy;
-  // write_SD();  <-- Removed for testing
+  save_energyProduced();
   totalCurrent = 0.0;
 
   // Calculate carbon saved
   carbon = ((int)(energy * 0.000707 * 1000.0 + 0.5) / 1000.0); // round to nearest gram
   return true;
 }
+
+/**
+ * Recover energy produced by sunstation from EEPROM
+ */
+void recover_energyProduced() 
+{
+  // TODO: is there a way to validate data that is read 
+  EEPROM.get(0, energy);
+}
+
+/**
+ * Save energy produced by sunstation to EEPROM
+ */
+void save_energyProduced() 
+{
+   EEPROM.put(0, energy);
+}
+
 /**
  * Saves energy produced by station in its lifetime on SD card
  */
@@ -317,33 +335,33 @@ bool write_SD() {
  * Reads the contents of the SD card 
  * into the the logFileChars buffer
  */
-void read_SD()
-{
-  logFile = SD.open("LOGS.TXT");
-  static byte ndx = 0;
-  char endMarker = '\n';
-  char rc;
-  if (logFile) {
-    // Place cursor at the start of file
-    logFile.seek(0); 
-    // read from the file until there's nothing else in it:
-    while (logFile.available()) {
-      rc = logFile.read();
-      if (rc != endMarker) {
-        logFileChars[ndx] = rc;
-        ndx++;
-        if (ndx >= MAX_THROUGHPUT) {
-          ndx = MAX_THROUGHPUT - 1;
-        }
-      }
-      else {
-        logFileChars[ndx] = '\0'; // terminate the string
-        ndx = 0;
-      }
-    }
-    logFile.close();
-  }
-}
+//void read_SD()
+//{
+//  logFile = SD.open("LOGS.TXT");
+//  static byte ndx = 0;
+//  char endMarker = '\n';
+//  char rc;
+//  if (logFile) {
+//    // Place cursor at the start of file
+//    logFile.seek(0); 
+//    // read from the file until there's nothing else in it:
+//    while (logFile.available()) {
+//      rc = logFile.read();
+//      if (rc != endMarker) {
+//        logFileChars[ndx] = rc;
+//        ndx++;
+//        if (ndx >= MAX_THROUGHPUT) {
+//          ndx = MAX_THROUGHPUT - 1;
+//        }
+//      }
+//      else {
+//        logFileChars[ndx] = '\0'; // terminate the string
+//        ndx = 0;
+//      }
+//    }
+//    logFile.close();
+//  }
+//}
 
 /** Staggers transmission of station data over BLE  */
 bool send_data(void *) 
