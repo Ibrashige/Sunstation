@@ -1,8 +1,6 @@
 # Sunstation
 
-This repository contains all the updated PCB schematics, MCU codes, & research information required to recreate the Sunstation electronics
-
-Written by Loïc Darboux with guidance from Chris Falconi and Ibrahim Hashim.
+This repository contains all the updated PCB schematics, MCU codes, & research information required to recreate the Sunstation electronics. Written by Loïc Darboux with guidance from Chris Falconi and Ibrahim Qasim.
 
 ## Prerequisites
 
