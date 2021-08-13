@@ -24,7 +24,7 @@ Simply flash ```SunStationFirmware.ino``` to the Arduino Nano using the Arduino 
 
 
 ## FlowChart
-![Image of Flowchart](https://github.com/SunstationDev/Sunstation/blob/main/Updated%20Flowchart.png)
+![Image of Flowchart](https://github.com/Ibrashige/Sunstation/blob/master/Updated%20Flowchart.png)
 
 
 ## Parts & Wiring
